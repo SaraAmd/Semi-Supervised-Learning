@@ -1,3 +1,4 @@
+'the code is used from https://github.com/perrying/pytorch-consistency-regularization/blob/master/ssl_lib/augmentation/augmentation_class.py"
 import numpy as np
 import torch
 import torch.nn.functional as F
