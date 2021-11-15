@@ -35,16 +35,4 @@ def __param_update(ema_model, raw_model, factor):
         raw_p.data.copy_(ema_p.data)
 
 
-def __buffer_update(ema_model, raw_model, factor):
-    """ema for buffer parameters (e.g., running_mean and running_var in nn.BatchNorm2d)"""
-    for ema_p, raw_p in zip(ema_model.buffers(), raw_model.buffers()):
-        ema_p.data = __ema(ema_p.data, raw_p.data, factor)
 
-
-def ema_update(ema_model, raw_model, ema_factor, weight_decay_factor=None, global_step=None):
-    if global_step is not None:
-        ema_factor = min(1 - 1 / (global_step+1), ema_factor)
-    __param_update(ema_model, raw_model, ema_factor)
-    __buffer_update(ema_model, raw_model, ema_factor)
-    if weight_decay_factor is not None:
-        apply_weight_decay(ema_model.modules(), weight_decay_factor)
