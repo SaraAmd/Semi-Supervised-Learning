@@ -1,4 +1,4 @@
-"This code uses the code for "Safe Deep Semi-Supervised Learning for Unseen-Class Unlabeled Data" to mudulate OODs in CIFAR10;
+"This code uses the code for "Safe Deep Semi-Supervised Learning for Unseen-Class Unlabeled Data" to mudulate OODs in unlabelde data for CIFAR10;
 import numpy as np
 
 import torch.utils.data
