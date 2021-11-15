@@ -1,8 +1,5 @@
 import numpy as np
 
-# from .resnet import ResNet
-# from .shakenet import ShakeNet
-# from .cnn13 import CNN13
 from .resnet3 import WideResNet
 
 # WRN-n-k denotes a residual network that has a total number of convolutional layers
