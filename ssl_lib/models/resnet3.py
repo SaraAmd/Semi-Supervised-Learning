@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Sep 27 17:09:39 2021
-
-@author: Monish
+The model is used from the MIXMatch method in https://github.com/YU1ut/MixMatch-pytorch/blob/master/models/wideresnet.py
 """
 
 import math
