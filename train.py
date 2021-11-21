@@ -15,11 +15,13 @@ from ssl_lib.models.builder import gen_model
 from ssl_lib.misc.meter import Meter
 from ssl_lib.param_scheduler import scheduler
 from ssl_lib.models import utils as model_utils
+from ssl_lib.algs import utils as alg_utils
 
 def average_features(feature_vectors_mapping, n_class):
     featureVector = []
     for i in feature_vectors_mapping.keys():
         featureVector.append(feature_vectors_mapping[i][0] / feature_vectors_mapping[i][1])
+        #print("the number of features in class",i, " is: ", feature_vectors_mapping[i][1])
     return(featureVector)
 
 
@@ -83,8 +85,9 @@ active_meantecher
     if(cur_iteration < warmup_number):
         all_data = labeled_data
     else:
-        all_data = torch.cat([labeled_data, ul_weak_data], 0)
+        all_data = torch.cat([labeled_data, ul_weak_data, ul_strong_data], 0)
 
+    forward_func = model.forward
     #get the model prediction
     stu_logits = model(all_data)
     #features = model.features()
@@ -92,42 +95,63 @@ active_meantecher
     labeled_preds = stu_logits[:labeled_data.shape[0]]
 
     #get prediction for unlabled data
-    stu_unlabeled_weak_logits = stu_logits[labels.shape[0]:]
-    #compute the supervoosed loss
-    L_supervised = F.cross_entropy(labeled_preds, labels)
+    #stu_unlabeled_weak_logits = stu_logits[labels.shape[0]:]
+    stu_unlabeled_weak_logits, stu_unlabeled_strong_logits = torch.chunk(stu_logits[labels.shape[0]:], 2, dim=0)
+
+    # compute the supervised loss
+    #supervised loss for UDA method
+    if cfg.tsa and cur_iteration > warmup_number:
+        none_reduced_loss = F.cross_entropy(labeled_preds, labels, reduction="none")
+        L_supervised = alg_utils.anneal_loss(
+            labeled_preds, labels, none_reduced_loss, cur_iteration+1,
+            cfg.iteration, labeled_preds.shape[1], cfg.tsa_schedule)
+    else:
+        L_supervised = F.cross_entropy(labeled_preds, labels)
+
 
     #if warm up is done, compute the unsupervsed loss
-    if(cfg.coef > 0 and cur_iteration > warmup_number):
+    if(cfg.coef > 0 and cur_iteration > warmup_number ):
+
+
+        # get target values from teacher model
+        if teacher_model is not None:
+            t_forward_func = teacher_model.forward
+            tea_logits = t_forward_func(all_data)
+            tea_unlabeled_weak_logits, _ = torch.chunk(tea_logits[labels.shape[0]:], 2, dim=0)
+        else:
+            t_forward_func = forward_func
+            tea_unlabeled_weak_logits = stu_unlabeled_weak_logits
+
+        model.update_batch_stats(False)
 
         # calc consistency loss
 # ssl_alg  return ConsistencyRegularization and ConsistencyRegularization reurns stu_preds, adjusted targets, mask for psuldo labeling
         y, targets, mask = ssl_alg(
-            stu_preds= stu_unlabeled_weak_logits,
-            #if there is no teacher the tea_logit is the model(student) logits
-            tea_logits=stu_unlabeled_weak_logits.detach(),
-            #in the original code the ul_strong_data can be the same as ul_weak_data
-            #data=ul_strong_data,
-            data = ul_weak_data,
-            stu_forward=stu_logits,
-            #if there is no teacher model, the t_forward_func is the same as forward_func
-            tea_forward=stu_logits
+            stu_preds = stu_unlabeled_strong_logits,
+            tea_logits = tea_unlabeled_weak_logits.detach(),
+            data = ul_strong_data,
+            stu_forward = forward_func,
+            tea_forward = t_forward_func
             )
         #model.update_batch_stats(True)
         #returns the loss from for example CrossEntropy class which returns
         #consistency is consistency type
-        L_consistency = consistency(y, targets, mask, weak_prediction=stu_unlabeled_weak_logits.softmax(1))
-
+        #L_consistency = consistency(y, targets, mask, weak_prediction=stu_unlabeled_weak_logits.softmax(1))
+        model.update_batch_stats(True)
+        L_consistency = consistency(y, targets, mask, weak_prediction=tea_unlabeled_weak_logits.softmax(1))
+        # schaduler for coef of unsupervised loss
+        if cfg.coef_schaduler:
+            coef = scheduler.linear_warmup(cfg.coef, cfg.warmup_iter, cur_iteration + 1)
+        else:
+            coef = cfg.coef
    #supervised learning
+
     else:
         L_consistency = torch.zeros_like(L_supervised)
+        coef = 0
         mask = None
 
-   #schaduler for coef of unsupervised loss
-    if cfg.coef_schaduler:
-        coef = scheduler.linear_warmup(cfg.coef, cfg.warmup_iter, cur_iteration + 1)
-    else:
-        coef=cfg.coef
-   # calc total loss
+    # calc total loss
     loss = L_supervised + coef * L_consistency
 
 
@@ -152,7 +176,7 @@ active_meantecher
 
     # update evaluation model's parameters by exponential moving average imediately after the warmup
     #to copy the parameters of the pretrained model on label data on teacher model (this if statment will be run once)
-    if cfg.ema and cur_iteration > cfg.warmup_iter and active_meantecher==False:
+    if cfg.ema_teacher and cur_iteration > cfg.warmup_iter and active_meantecher==False:
         for ema_p, raw_p in zip(teacher_model.parameters(), model.parameters()):
             ema_p.data.copy_(raw_p.data)
         active_meantecher == True
@@ -161,7 +185,15 @@ active_meantecher
         model_utils.__param_update(
             teacher_model, model, cfg.wa_ema_factor,
             )
-
+    #update the average model during the warmup
+    if cur_iteration < cfg.warmup_iter:
+        for ema_p, raw_p in zip(average_model.parameters(), model.parameters()):
+            ema_p.data.copy_(raw_p.data)
+    # update evaluation model's parameters by exponential moving average
+    if cfg.weight_average  and cur_iteration > cfg.warmup_iter:
+        model_utils.__param_update(
+            average_model, model, cfg.wa_ema_factor
+            )
     # calculate accuracy for labeled data
     acc = (labeled_preds.max(1)[1] == labels).float().mean()
 
@@ -213,16 +245,16 @@ def main(cfg, logger):
 
     active_meantecher =False
     # set consistency type: consistency type (cross entropy, mean squre)
-    consistency = gen_consistency(cfg.consis, cfg)
+    consistency = gen_consistency(cfg.consistency, cfg)
     # set ssl algorithm
     ssl_alg = gen_ssl_alg(cfg.alg, cfg)
 
     # build student model
     model = gen_model(cfg.arch, num_classes, img_size).to(device)
     # for ema build the teacher model
-    if cfg.ema:
+    if cfg.ema_teacher:
         teacher_model = gen_model(cfg.arch, num_classes, img_size).to(device)
-        #teacher_model.load_state_dict(model.state_dict())
+        teacher_model.load_state_dict(model.state_dict())
     else:
         teacher_model = None
     # for evaluation
@@ -258,6 +290,8 @@ def main(cfg, logger):
 
     # init meter
     metric_meter = Meter()
+    test_acc_list = []
+    raw_acc_list = []
     maximum_val_acc = 0
     logger.info("training")
 
@@ -277,11 +311,14 @@ def main(cfg, logger):
         if (i>cfg.warmup_iter):
 
             # concatenate all labeled data and unlabeled data
-            all_data = torch.cat([l_aug.to(device), ul_w_aug.to(device)], 0)
+            all_data = torch.cat([l_aug, ul_w_aug, ul_s_aug], 0).to(device)
             #give  the mdoel the data within a batch to extract features
             stu_logits = model(all_data)
             # extract features
             features = model.feature_extractor()
+            #print("features ", features.size())
+            #features = F.normalize(features)
+            #print(" features ", features[1])
             #This is storing  the sum of features #for a particular class, along with the number of items added
             #So that while averaging we can have the number to divide it with
             feature_vectors_mapping = {}
@@ -298,36 +335,52 @@ def main(cfg, logger):
             anchor_features = average_features(feature_vectors_mapping, cfg.n_class)
 
             cos_sim_ul = []
-            for j in range(l_batchSize,l_batchSize+ul_batchSize):
-                cos_sim = -100000
-                for anchor in anchor_features:
 
-                    temp = F.cosine_similarity(torch.flatten(anchor),torch.flatten(features[j]), dim = 0)
-                    #experimont with new similarity mertrics
-                    temperature=1
-                    exp_cosine = torch.exp(temp) / temperature
-                    euclidena_dist = sum(((torch.flatten(anchor)-torch.flatten(features[j])) ** 2))
+            for j in range(l_batchSize,l_batchSize+ul_batchSize):
+                #cos_sim = -100000000
+                sim = []
+                for anchor in anchor_features:
+                    #print(anchor)
+
+                    # experimont with similarity mertrics
+                    if cfg.similarity == 'exp_cos':
+                        #print("the type of anchor is: ",torch.flatten(anchor).dtype)
+                        #print("the type of features[j] is: ", torch.flatten(features[j]).dtype)
+                        temp = F.cosine_similarity(torch.flatten(anchor),torch.flatten(features[j]), dim = 0)
+                        #print('temp ', (temp))
+                        temperature=1
+                        similarity = torch.exp(temp) / temperature
+                        #print('similarity ', (similarity))
+                        sim.append(similarity)
+                    else:
+                        similarity = F.cosine_similarity(torch.flatten(anchor), torch.flatten(features[j]), dim=0)
+                        sim.append(similarity)
+                    #euclidena_dist = sum(((torch.flatten(anchor)-torch.flatten(features[j])) ** 2))
                     #find the maximum similarity between the unlabelded data poin to the anchors
-                    if(exp_cosine > cos_sim):
-                         cos_sim = exp_cosine
-                cos_sim_ul.append(cos_sim)
+                    # if(similarity > cos_sim):
+                    #      cos_sim = similarity
+                #print(" max sim ", max(sim))
+                cos_sim_ul.append(max(sim))
             #print('len of cos_sim_ul ', len(cos_sim_ul))
+            #print('len of cos_sim_ul ', (len(cos_sim_ul)))
 
             #get the standard deviaiton of similarities of Unlabele data with anchors within the batch
-            sd = torch.std(torch.tensor(cos_sim_ul),unbiased =True).item()
+            sd = torch.std(torch.tensor(cos_sim_ul, dtype=float),unbiased =True).item()
+            #print("sd of similarity is: ", sd)
             #get the standat deviaiton of similarities of Unlabele data with anchors within the batch
-            mean = torch.mean(torch.tensor(cos_sim_ul))
+            mean = torch.mean(torch.tensor(cos_sim_ul), dtype=float)
+            #print("mean of similarity is: ", mean)
             #find the indices of OODs
             ood_indices = []
             ood_labels = []
             for j in range(len(cos_sim_ul)):
-                if(cos_sim_ul[j]<mean-2*sd):
+                if(cos_sim_ul[j]<mean-1*sd):
                     ood_indices.append(j)
                     ood_labels.append(u_labels[j])
 
             #print the perfrmance of the model for detecting the OODs
             real_OOD=0
-            if i % 10000==0:
+            if i % 1000==0:
                 for label in u_labels:
                     if label.item() == 6 or label .item() == 7 or label .item() == 8 or label .item() == 9:
                         real_OOD+=1
@@ -345,6 +398,7 @@ def main(cfg, logger):
             for j in range(len(ood_indices)-1,-1,-1):
 
                 ul_w_aug = torch.cat([ul_w_aug[:ood_indices[j]],ul_w_aug[ood_indices[j]+1:]],0)
+                ul_s_aug = torch.cat([ul_s_aug[:ood_indices[j]], ul_s_aug[ood_indices[j] + 1:]], 0)
                 ul_w_aug_labels = torch.cat([u_labels[:ood_indices[j]],u_labels[ood_indices[j]+1:]],0)
 
 
@@ -389,23 +443,39 @@ def main(cfg, logger):
                 mean_raw_acc, mean_val_acc, mean_val_loss = evaluation(model, eval_model, val_loader, device)
                 logger.info("validation loss %f | validation acc. %f | raw acc. %f", mean_val_loss, mean_val_acc,
                             mean_raw_acc)
-                if cfg.ema:
-                    mean_raw_acc, mean_val_acc, mean_val_loss = evaluation(model, teacher_model, val_loader, device)
-                    logger.info(" ema_model validation loss %f | ema_model validation acc. %f | raw_model validation acc. %f", mean_val_loss, mean_val_acc,
-                            mean_raw_acc)
+                # if cfg.ema_teacher:
+                #     mean_raw_acc, mean_val_acc, mean_val_loss = evaluation(model, teacher_model, val_loader, device)
+                #     logger.info(" ema_model validation loss %f | ema_model validation acc. %f | raw_model validation acc. %f", mean_val_loss, mean_val_acc,
+                #             mean_raw_acc)
 
                 # test
-                if not cfg.only_validation and mean_val_acc > maximum_val_acc:
-                    torch.save(eval_model.state_dict(), os.path.join(cfg.out_dir, "best_model.pth"))
-                    maximum_val_acc = mean_val_acc
-                    logger.info("test")
-                    mean_raw_acc, mean_test_acc, mean_test_loss = evaluation(model, eval_model, test_loader, device)
-                    logger.info("test loss %f | test acc. %f | raw acc. %f", mean_test_loss, mean_test_acc,
-                                mean_raw_acc)
-                    logger.info("test accuracy %f", mean_test_acc)
+                # if not cfg.only_validation and mean_val_acc > maximum_val_acc:
+                #     torch.save(eval_model.state_dict(), os.path.join(cfg.out_dir, "best_model.pth"))
+                #     maximum_val_acc = mean_val_acc
+                #     logger.info("test")
+                #     mean_raw_acc, mean_test_acc, mean_test_loss = evaluation(model, eval_model, test_loader, device)
+                #     logger.info("test loss %f | test acc. %f | raw acc. %f", mean_test_loss, mean_test_acc,
+                #                 mean_raw_acc)
+                #     logger.info("test accuracy %f", mean_test_acc)
+                logger.info("test")
+                mean_raw_acc, mean_test_acc, mean_test_loss = evaluation(model, eval_model, test_loader, device)
+                logger.info("test loss %f | test acc. %f | raw acc. %f", mean_test_loss, mean_test_acc, mean_raw_acc)
+                test_acc_list.append(mean_test_acc)
+                raw_acc_list.append(mean_raw_acc)
 
             torch.save(model.state_dict(), os.path.join(cfg.out_dir, "model_checkpoint.pth"))
             torch.save(optimizer.state_dict(), os.path.join(cfg.out_dir, "optimizer_checkpoint.pth"))
+
+    numpy.save(os.path.join(cfg.out_dir, "results"), test_acc_list)
+    numpy.save(os.path.join(cfg.out_dir, "raw_results"), raw_acc_list)
+    accuracies = {}
+    for i in [1, 10, 20, 50]:
+        logger.info("mean test acc. over last %d checkpoints: %f", i, numpy.median(test_acc_list[-i:]))
+        logger.info("mean test acc. for raw model over last %d checkpoints: %f", i, numpy.median(raw_acc_list[-i:]))
+        accuracies[f"last{i}"] = numpy.median(test_acc_list[-i:])
+
+    with open(os.path.join(cfg.out_dir, "results.json"), "w") as f:
+        json.dump(accuracies, f, sort_keys=True)
 
 
 if __name__ == "__main__":

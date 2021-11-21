@@ -59,8 +59,3 @@ class ConsistencyRegularization:
     def __repr__(self):
         return f"Consistency(threshold={self.threshold}, sharpen={self.sharpen}, tau={self.tau})"
 
-    def moving_average(self, parameters):
-        ema_factor = min(1 - 1 / (self.global_step + 1), self.ema_factor)
-        for emp_p, p in zip(self.model.parameters(), parameters):
-            print("-----------------"+emp_p.shape, p.shape)
-            emp_p.data = ema_factor * emp_p.data + (1 - ema_factor) * p.data

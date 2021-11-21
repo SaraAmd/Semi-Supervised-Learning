@@ -7,7 +7,7 @@ from .vat import VAT
 def gen_ssl_alg(name, cfg):
     if name == "ict": # mixed target <-> mixed input
         return ICT(
-            cfg.consis,
+            cfg.consistency,
             cfg.threshold,
             cfg.sharpen,
             cfg.temp_softmax,
@@ -15,14 +15,14 @@ def gen_ssl_alg(name, cfg):
         )
     elif name == "cr": # base augment <-> another augment
         return ConsistencyRegularization(
-            cfg.consis,
+            cfg.consistency,
             cfg.threshold,
             cfg.sharpen,
             cfg.temp_softmax
         )
     elif name == "pl": # hard label <-> strong augment
         return PseudoLabel(
-            cfg.consis,
+            cfg.consistency,
             cfg.threshold,
             cfg.sharpen,
             cfg.temp_softmax
@@ -30,7 +30,7 @@ def gen_ssl_alg(name, cfg):
     elif name == "vat": # base augment <-> adversarial
         from ..consistency import builder
         return VAT(
-            cfg.consis,
+            cfg.consistency,
             cfg.threshold,
             cfg.sharpen,
             cfg.temp_softmax,

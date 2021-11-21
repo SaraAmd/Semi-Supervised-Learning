@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-The model is used from the MIXMatch method in https://github.com/YU1ut/MixMatch-pytorch/blob/master/models/wideresnet.py
+Created on Mon Sep 27 17:09:39 2021
+
+@author: Monish
 """
 
 import math
@@ -97,5 +99,10 @@ class WideResNet(nn.Module):
     def feature_extractor(self):
 
         return self.features
+    
+    def update_batch_stats(self, flag):
+        for m in self.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.update_batch_stats = flag
     
 

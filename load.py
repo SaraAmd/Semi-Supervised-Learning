@@ -1,4 +1,3 @@
-"This code uses the code for "Safe Deep Semi-Supervised Learning for Unseen-Class Unlabeled Data" to mudulate OODs in unlabelde data for CIFAR10;
 import numpy as np
 
 import torch.utils.data
@@ -85,7 +84,7 @@ def get_dataloaders(root,data, n_labels, n_unlabels, n_valid, l_batch_size, ul_b
     ], 0)
 
     # set augmentation on  train data(it should be implemented on dataset objects)
-    flags = [True if b == "t" else False for b in cfg.wa.split(".")]
+    #flags = [True if b == "t" else False for b in cfg.wa.split(".")]
     #get zca parameter for zca normalisation
     if cfg.whiten:
         mean = train_data.mean((0, 1, 2)) / 255.
@@ -96,6 +95,10 @@ def get_dataloaders(root,data, n_labels, n_unlabels, n_valid, l_batch_size, ul_b
         # from [0, 1] to [-1, 1]
         mean = [0.5, 0.5, 0.5]
         scale = [0.5, 0.5, 0.5]
+
+    # set augmentation
+    # RA: RandAugment, WA: Weak Augmentation
+    randauglist = "fixmatch" if cfg.alg == "pl" else "uda"
 
     flags = [True if b == "t" else False for b in cfg.wa.split(".")]
 
@@ -141,11 +144,11 @@ def get_dataloaders(root,data, n_labels, n_unlabels, n_valid, l_batch_size, ul_b
 
     data_loaders = {
         'labeled': torch.utils.data.DataLoader(
-            dataset=labeled_train_dataset, batch_size= l_batch_size, drop_last=True,
+            dataset=labeled_train_dataset, batch_size= l_batch_size, drop_last=False,
             sampler = InfiniteSampler(len(labeled_train_dataset), cfg.iteration * cfg.l_batch_size),
             num_workers=cfg.num_workers),
         'unlabeled': torch.utils.data.DataLoader(
-            dataset=unlabeled_train_dataset, batch_size=ul_batch_size, drop_last=True,
+            dataset=unlabeled_train_dataset, batch_size=ul_batch_size, drop_last=False,
             sampler = InfiniteSampler(len(unlabeled_train_dataset), cfg.iteration * cfg.ul_batch_size),
             num_workers=cfg.num_workers),
 
