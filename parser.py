@@ -41,12 +41,12 @@ def get_args():
 
 #Model
     parser.add_argument('--arch', default='wrn', type=str, help=' wrn')
-    parser.add_argument("--alg", "-a", default="cr", type=str, help="ssl algorithm : [supervised, 'ict', 'cr', 'pl', 'vat']]")
+    parser.add_argument("--alg", default="cr", type=str, help="ssl algorithm : [supervised, 'ict', 'cr', 'pl', 'vat']]")
 
 # optimization config
     parser.add_argument("--optimizer", "-opt", default="sgd", choices=['sgd', 'adam'], type=str, help="optimizer")
     parser.add_argument("--lr", default=3e-2, type=float, help="learning rate")
-    parser.add_argument("--weight_decay", "-wd", default=0.01, type=float, help="weight decay")
+    parser.add_argument("--weight_decay", "-wd", default=0.0005, type=float, help="weight decay")
 
     parser.add_argument("--momentum", default=0.9, type=float, help="momentum for sgd or beta_1 for adam")
     parser.add_argument("--iteration", default=500000, type=int, help="number of training iteration")

@@ -3,7 +3,8 @@ import numpy as np
 import torch.utils.data
 from torchvision import transforms
 import dataset
-from ssl_lib.augmentation.builder import  gen_weak_augmentation
+
+from ssl_lib.augmentation.builder import  gen_weak_augmentation, gen_strong_augmentation
 from ssl_lib.augmentation.augmentation_pool import numpy_batch_gcn, ZCA, GCN
 import random
 _DATA_DIR = "data"
@@ -127,6 +128,13 @@ def get_dataloaders(root,data, n_labels, n_unlabels, n_valid, l_batch_size, ul_b
         logger.info(unlabeled_augmentation)
 
     unlabeled_train_dataset.weak_augmentation = unlabeled_augmentation
+
+    if cfg.strong_aug:
+        strong_augmentation = gen_strong_augmentation(
+            cfg.img_size, mean, scale, flags[0], flags[1], randauglist, cfg.zca)
+        unlabeled_train_dataset.strong_augmentation = strong_augmentation
+        if logger is not None:
+            logger.info(strong_augmentation)
 
     if cfg.zca:
         test_transform = transforms.Compose([GCN(), ZCA(mean, scale)])

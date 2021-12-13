@@ -1,5 +1,5 @@
 import  torch
-
+import  json
 from scipy import spatial
 import load
 import time
@@ -100,7 +100,7 @@ active_meantecher
 
     # compute the supervised loss
     #supervised loss for UDA method
-    if cfg.tsa and cur_iteration > warmup_number:
+    if cfg.tsa and cur_iteration >= warmup_number:
         none_reduced_loss = F.cross_entropy(labeled_preds, labels, reduction="none")
         L_supervised = alg_utils.anneal_loss(
             labeled_preds, labels, none_reduced_loss, cur_iteration+1,
@@ -110,7 +110,7 @@ active_meantecher
 
 
     #if warm up is done, compute the unsupervsed loss
-    if(cfg.coef > 0 and cur_iteration > warmup_number ):
+    if(cfg.coef > 0 and cur_iteration >= warmup_number ):
 
 
         # get target values from teacher model
@@ -168,32 +168,30 @@ active_meantecher
     loss.backward()
     #if we have weight regularization in the loss
     #weight decay factor 0.2 after 400,000 iterations
-    if cfg.weight_decay> 0 and cur_iteration > warmup_number:
+    if cfg.weight_decay > 0 and cur_iteration >= warmup_number:
         decay_coeff = cfg.weight_decay * cur_lr
         model_utils.apply_weight_decay(model.modules(), decay_coeff)
-    #update the parameters
+    # update the parameters
     optimizer.step()
+    # update the average model and teacher model during the warmup
+    # if cur_iteration == cfg.warmup_iter:
+    #     for ave_p, raw_p in zip(average_model.parameters(), model.parameters()):
+    #         ave_p.data.copy_(raw_p.data)
+    #     if cfg.ema_teacher:
+    #         for tea_p, raw_p in zip(teacher_model.parameters(), model.parameters()):
+    #             tea_p.data.copy_(raw_p.data)
 
-    # update evaluation model's parameters by exponential moving average imediately after the warmup
-    #to copy the parameters of the pretrained model on label data on teacher model (this if statment will be run once)
-    if cfg.ema_teacher and cur_iteration > cfg.warmup_iter and active_meantecher==False:
-        for ema_p, raw_p in zip(teacher_model.parameters(), model.parameters()):
-            ema_p.data.copy_(raw_p.data)
-        active_meantecher == True
+    # update teacher model's parameters by exponential moving average
+    if cfg.ema_teacher and cur_iteration >= cfg.warmup_iter:
+        model_utils.ema_update(
+            teacher_model, model, cfg.wa_ema_factor, cfg.weight_decay * cur_lr if cfg.wa_apply_wd else None
+        )
+
     # update evaluation model's parameters by exponential moving average
-    if active_meantecher:
-        model_utils.__param_update(
-            teacher_model, model, cfg.wa_ema_factor,
-            )
-    #update the average model during the warmup
-    if cur_iteration < cfg.warmup_iter:
-        for ema_p, raw_p in zip(average_model.parameters(), model.parameters()):
-            ema_p.data.copy_(raw_p.data)
-    # update evaluation model's parameters by exponential moving average
-    if cfg.weight_average  and cur_iteration > cfg.warmup_iter:
-        model_utils.__param_update(
-            average_model, model, cfg.wa_ema_factor
-            )
+    if cfg.weight_average and cur_iteration >= cfg.warmup_iter:
+        model_utils.ema_update(
+            average_model, model, cfg.wa_ema_factor, cfg.weight_decay * cur_lr if cfg.wa_apply_wd else None
+        )
     # calculate accuracy for labeled data
     acc = (labeled_preds.max(1)[1] == labels).float().mean()
 
@@ -215,9 +213,9 @@ def main(cfg, logger):
     torch.manual_seed(cfg.seed)
     numpy.random.seed(cfg.seed)
     random.seed(cfg.seed)
-    torch.cuda.manual_seed(cfg.seed)
-    torch.cuda.manual_seed_all(cfg.seed)
-    torch.backends.cudnn.deterministic = True
+    #torch.cuda.manual_seed(cfg.seed)
+    #torch.cuda.manual_seed_all(cfg.seed)
+    #backends.cudnn.deterministic = True
     #all the model parameters and the input data should be on the same gpu or RAM
     # select device
     if torch.cuda.is_available():
@@ -234,7 +232,7 @@ def main(cfg, logger):
     data_loaders = load.get_dataloaders(root= cfg.root, data=cfg.dataset, n_labels=cfg.n_labels, n_unlabels=cfg.n_unlabels, n_valid=cfg.n_valid,
                                         l_batch_size=cfg.l_batch_size, ul_batch_size=cfg.ul_batch_size,
                                         test_batch_size=cfg.test_batch_size, iterations=cfg.iteration,
-                                        n_class=cfg.n_class, ratio=cfg.ratio, unlabeled_aug=cfg.unlabeled_aug, cfg=cfg)
+                                        n_class=cfg.n_class, ratio=cfg.ratio, unlabeled_aug=cfg.unlabeled_aug, logger=logger, cfg=cfg)
     label_loader = data_loaders['labeled']
     unlabel_loader = data_loaders['unlabeled']
     test_loader = data_loaders['test']
@@ -367,20 +365,20 @@ def main(cfg, logger):
             #get the standard deviaiton of similarities of Unlabele data with anchors within the batch
             sd = torch.std(torch.tensor(cos_sim_ul, dtype=float),unbiased =True).item()
             #print("sd of similarity is: ", sd)
-            #get the standat deviaiton of similarities of Unlabele data with anchors within the batch
+            #get the mean of similarities of Unlabele data with anchors within the batch
             mean = torch.mean(torch.tensor(cos_sim_ul), dtype=float)
             #print("mean of similarity is: ", mean)
             #find the indices of OODs
             ood_indices = []
             ood_labels = []
             for j in range(len(cos_sim_ul)):
-                if(cos_sim_ul[j]<mean-1*sd):
+                if(cos_sim_ul[j]<mean-2*sd):
                     ood_indices.append(j)
                     ood_labels.append(u_labels[j])
 
             #print the perfrmance of the model for detecting the OODs
             real_OOD=0
-            if i % 1000==0:
+            if i % 2000==0:
                 for label in u_labels:
                     if label.item() == 6 or label .item() == 7 or label .item() == 8 or label .item() == 9:
                         real_OOD+=1
@@ -417,6 +415,13 @@ def main(cfg, logger):
                 ul_s_aug.to(device), labels.to(device),
                 average_model, cfg.warmup_iter,active_meantecher
             )
+        #regular SSl
+        # params = param_update(
+        #     cfg, i, model, teacher_model, optimizer, ssl_alg,
+        #     consistency, l_aug.to(device), ul_w_aug.to(device),
+        #     ul_s_aug.to(device), labels.to(device),
+        #     average_model, cfg.warmup_iter, active_meantecher
+        # )
 
 
 
