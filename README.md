@@ -12,5 +12,5 @@ sh ./scripts/fixmatch ./results/fixmatch.sh 2400 for Fixmatch and sh ./scripts/u
 
 for UDA type
 
-sh ./scripts/fixmatch.sh ./results/fixmatch 2400
+sh ./scripts/uda.sh ./results/uda 2400
 
